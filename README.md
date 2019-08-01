@@ -9,12 +9,12 @@
 
 The motivation is that permissions can be global (IsAdmin, CanRead, CanValidate)
 or scoped (a specific user/group has permissions on specific items).
-Thus, we redifine the notion of permission as: "a Right on a specific scope".
+Thus, we redifine the notion of permission as _a Right on a specific scope_.
 
-The package defines two primitives: PermissionResolver, that returns true if the permission is granted,
-and ResolverFactory that fetches a permission resolver with a scope.
+The package defines two primitives: `PermissionResolver`, that returns `true` if the permission is granted,
+and `ResolverFactory` that fetches a `PermissionResolver` with a scope.
 
-The package provides a threadsafe pool of ResolverFactory with internal cache.
+The package provides a threadsafe pool of `ResolverFactory` with internal cache.
 
 See package documentation for details.
 
