@@ -1,7 +1,7 @@
 package permz
 
-// Right aliases an integer for documentation purpose;
-type Right = int
+// Right aliases an interface{} for documentation purpose.
+type Right = interface{}
 
 // PermissionResolver describes a function that returns wheter the Right is granted or not.
 type PermissionResolver = func(Right) bool

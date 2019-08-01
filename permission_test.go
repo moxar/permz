@@ -22,8 +22,11 @@ func ExamplePermissionResolver() {
 
 	// This resolver returns true if the right is granted.
 	var Resolve PermissionResolver
-	Resolve = func(right int) bool {
-		return InArray(permissions, right)
+	Resolve = func(right Right) bool {
+		if v, ok := right.(int); ok {
+			return InArray(permissions, v)
+		}
+		return false
 	}
 
 	fmt.Println(Resolve(1))

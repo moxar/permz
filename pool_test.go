@@ -3,6 +3,7 @@ package permz
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,10 +15,18 @@ func ExampleResolverFactory() {
 	var GetUserProjectPermissions func(context.Context, int, int) ([]int, error)
 	var NewResolverFromPermissions func([]int) PermissionResolver
 
+	type Pair struct {
+		UserID, ProjectID int
+	}
+
 	var factory ResolverFactory
-	factory = func(ctx context.Context, userID, projectID interface{}) (PermissionResolver, error) {
+	factory = func(ctx context.Context, scope Scope) (PermissionResolver, error) {
 		// fetch the set of permissions of this user on this project
-		perms, err := GetUserProjectPermissions(ctx, userID.(int), projectID.(int))
+		p, ok := scope.(Pair)
+		if !ok {
+			return nil, errors.New("invalid scope type")
+		}
+		perms, err := GetUserProjectPermissions(ctx, p.UserID, p.ProjectID)
 		if err != nil {
 			return nil, err
 		}
@@ -27,7 +36,7 @@ func ExampleResolverFactory() {
 		return resolver, nil
 	}
 
-	resolver, err := factory(context.TODO(), 4, 1)
+	resolver, err := factory(context.TODO(), Pair{4, 1})
 	if err != nil {
 		// ...
 	}
@@ -40,120 +49,121 @@ func TestPool_GetResolver(t *testing.T) {
 	var called int32
 
 	// slow resolver, to test the lock behaviour.
-	slow := func(context.Context, interface{}, interface{}) (PermissionResolver, error) {
+	slow := func(ctx context.Context, scope Scope) (PermissionResolver, error) {
 		atomic.AddInt32(&called, 1)
 		time.Sleep(time.Millisecond * 10)
 		return True, nil
 	}
 
-	// isEven's resolver returns true if k1 is even.
-	isEven := func(ctx context.Context, key1, key2 interface{}) (PermissionResolver, error) {
-		return func(int) bool {
-			return key1.(int)%2 == 0
+	// modulo resolver returns true r % scope == 0
+	modulo := func(ctx context.Context, scope Scope) (PermissionResolver, error) {
+		return func(r Right) bool {
+			return r.(int)%scope.(int) == 0
 		}, nil
 	}
 
-	var dictionnary = map[string]ResolverFactory{
-		"true":  func(context.Context, interface{}, interface{}) (PermissionResolver, error) { return True, nil },
-		"false": func(context.Context, interface{}, interface{}) (PermissionResolver, error) { return False, nil },
-		"error": func(context.Context, interface{}, interface{}) (PermissionResolver, error) {
-			return nil, errors.New("boom")
-		},
-		"slow": slow,
-		"even": isEven,
+	fail := func(ctx context.Context, scope Scope) (PermissionResolver, error) {
+		return nil, errors.New("boom")
 	}
 
-	ctx := context.TODO()
-	p := NewPool(dictionnary)
+	type Given struct {
+		Factory ResolverFactory
+		Scope   Scope
+		Right   Right
+	}
 
-	t.Run("when resolver is in dictionnary", func(t *testing.T) {
-		r, err := p.GetResolver(ctx, "true", 0, 0)
-		if err != nil {
-			t.Error("resolver is in dictionnary, should not fail")
-			return
-		}
-		if !r(0) {
-			t.Error("should resolve true")
-			return
-		}
-	})
+	type Want struct {
+		Bool bool
+		Err  error
+	}
 
-	t.Run("when resolver is not in dictionnary", func(t *testing.T) {
-		_, err := p.GetResolver(ctx, "undefined", 0, 0)
-		if err == nil {
-			t.Error("resolver is not dictionnary, should fail")
-			return
-		}
-	})
+	type Case struct {
+		Sentence string
+		Given
+		Want
+	}
 
-	t.Run("when factory fails", func(t *testing.T) {
-		_, err := p.GetResolver(ctx, "error", 0, 0)
-		if err == nil {
-			t.Error("resolver is not dictionnary, should fail")
-			return
-		}
-	})
+	var cases = []Case{
+		{
+			Sentence: "the factory fails",
+			Given: Given{
+				Factory: fail,
+				Scope:   nil,
+				Right:   nil,
+			},
+			Want: Want{
+				Bool: false,
+				Err:  errors.New("boom"),
+			},
+		},
+		{
+			Sentence: "the factory is modulo",
+			Given: Given{
+				Factory: modulo,
+				Scope:   3,
+				Right:   9,
+			},
+			Want: Want{
+				Bool: true,
+				Err:  nil,
+			},
+		},
+		{
+			Sentence: "the factory is slow",
+			Given: Given{
+				Factory: slow,
+				Scope:   "foo",
+				Right:   nil,
+			},
+			Want: Want{
+				Bool: true,
+				Err:  nil,
+			},
+		},
+		{
+			Sentence: "the factory is slow",
+			Given: Given{
+				Factory: slow,
+				Scope:   "bar",
+				Right:   nil,
+			},
+			Want: Want{
+				Bool: true,
+				Err:  nil,
+			},
+		},
+	}
 
-	t.Run("when scope is complex", func(t *testing.T) {
-		t.Run("with odd value", func(t *testing.T) {
-			r, err := p.GetResolver(ctx, "even", 1, 0)
-			if err != nil {
-				t.Error("resolver is in dictionnary, should not fail")
-				return
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("As a pool, when %s and the scope is %v, given %v", c.Sentence, c.Scope, c.Right), func(t *testing.T) {
+			p := NewPool(c.Given.Factory)
+			var wg sync.WaitGroup
+			for i := 0; i < 10; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					r, err := p.GetResolver(context.TODO(), c.Given.Scope)
+					if (c.Want.Err != nil) != (err != nil) {
+						t.Error("errors should match")
+						t.Error("want:", c.Want.Err)
+						t.Error("got: ", err)
+						return
+					}
+
+					if err != nil {
+						return
+					}
+					if r(c.Given.Right) != c.Want.Bool {
+						t.Errorf("permission should be %v", c.Want.Bool)
+						return
+					}
+				}()
 			}
-			if r(0) {
-				t.Error("should resolve false with odd key")
-				return
-			}
-
+			wg.Wait()
 		})
+	}
 
-		t.Run("with even value", func(t *testing.T) {
-			r, err := p.GetResolver(ctx, "even", 2, 0)
-			if err != nil {
-				t.Error("resolver is in dictionnary, should not fail")
-				return
-			}
-			if !r(0) {
-				t.Error("should resolve true with even key")
-				return
-			}
-
-		})
-	})
-
-	t.Run("when factory is slow", func(t *testing.T) {
-		var wg sync.WaitGroup
-		for i := 0; i <= 10; i++ {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				r, err := p.GetResolver(ctx, "slow", i%2, 0)
-				if err != nil {
-					t.Error("slowFactory call should not return error")
-					return
-				}
-				if !r(0) {
-					t.Error("slow should not fail")
-					return
-				}
-			}(i)
-		}
-		wg.Wait()
-
-		if atomic.LoadInt32(&called) != 2 {
-			t.Errorf("slow should be called once for scope 1 and 2, then cached: %d calls", called)
-			return
-		}
-	})
-}
-
-func TestContext(t *testing.T) {
-	p := NewPool(nil)
-	ctx := context.Background()
-	ctx = CtxSetPool(ctx, p)
-	p = CtxGetPool(ctx)
-	if p == nil {
-		t.Fail()
+	if total := atomic.LoadInt32(&called); total != 2 {
+		t.Errorf("slow factory should be 2 time, total of %d calls", total)
 	}
 }
